@@ -1,1 +1,1 @@
-# NDVI-time-series-analysis
+# NDVI time serie analysis

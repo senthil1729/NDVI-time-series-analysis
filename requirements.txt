@@ -1,0 +1,7 @@
+earthengine-api
+pandas
+numpy
+plotly
+tensorflow
+scikit-learn
+scipy
