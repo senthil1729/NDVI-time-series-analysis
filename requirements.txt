@@ -2,6 +2,6 @@ earthengine-api
 pandas
 numpy
 plotly
-tensorflow
+torch==2.3.0+cu121
 scikit-learn
 scipy
