@@ -32,11 +32,7 @@ This project implements an NDVI (Normalized Difference Vegetation Index) time se
    pip install -r requirements.txt
    ```
 
-3. Set up your Google Earth Engine authentication:
-
-   ```shell
-   earthengine authenticate
-   ```
+3. Set up your [Google Earth Engine authentication](https://developers.google.com/earth-engine/guides/auth)
 
 ## Usage
 
