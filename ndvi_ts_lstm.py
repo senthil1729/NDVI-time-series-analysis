@@ -9,15 +9,18 @@ import torch.optim as optim
 from torch.utils.data import TensorDataset, DataLoader
 from numpy import array, hstack
 from scipy.interpolate import UnivariateSpline
+import warnings
 import plotly.graph_objects as go
 # from datetime import datetime, timedelta
+warnings.filterwarnings("ignore")
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.2):
         super(LSTMModel, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
+        self.dropout = nn.Dropout(dropout_rate)
         self.fc = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
@@ -31,6 +34,13 @@ class NDVIForecaster:
     def __init__(self, coordinates, start_date, end_date,
                  n_steps_in, n_steps_out, lstm_units,
                  percentile, bimonthly_period, spline_smoothing):
+        # Pre-defined hyperparameters based on extensive testing
+        self.model_config = {
+            'lstm_units': 244,
+            'num_layers': 1, 
+            'dropout_rate': 0.2887856831106061, 
+            'learning_rate': 0.001827795604676652, 
+            'batch_size': 128}
         self.coordinates = coordinates
         self.end_date = end_date
         self.start_date = start_date
@@ -55,9 +65,9 @@ class NDVIForecaster:
         self.current_date = pd.Timestamp.today().normalize()
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
-        if self.device.type == 'cuda':
-            print(f"GPU name: {torch.cuda.get_device_name(0)}")
-            print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
+        # if self.device.type == 'cuda':
+        #     print(f"GPU name: {torch.cuda.get_device_name(0)}")
+        #     print(f"GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.2f} GB")
         self.model_original = None
         self.model_filtered = None
 
@@ -291,6 +301,7 @@ class NDVIForecaster:
             
             test_start = end_date + pd.Timedelta(days=1)
             test_end = min(test_start + three_months, self.current_date)
+            # test_end = test_start + three_months
             
             print(f"Fetching test data from {test_start} to {test_end}")
             # test_ndvi_timeseries = self.get_ndvi_timeseries(test_start, test_end)
@@ -300,6 +311,16 @@ class NDVIForecaster:
             # self.test_df = pd.merge_asof(test_ndvi_df.sort_values('Date'), 
             #                             test_weather_df.sort_values('Date'), 
             #                             on='Date', direction='nearest')
+
+            # # Fetch additional data if needed
+            # if test_end > self.merged_df['Date'].max():
+            #     additional_ndvi_timeseries = self.get_ndvi_timeseries(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
+            #     additional_ndvi_df = self.extract_ndvi_data(additional_ndvi_timeseries, filtering=False)
+            #     additional_weather_df = self.get_weather_data(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
+            #     additional_df = pd.merge_asof(additional_ndvi_df.sort_values('Date'), 
+            #                                 additional_weather_df.sort_values('Date'), 
+            #                                 on='Date', direction='nearest')
+            #     self.merged_df = pd.concat([self.merged_df, additional_df]).sort_values('Date')
 
             self.test_df = self.merged_df[
                 (self.merged_df['Date'] > end_date) & 
@@ -333,6 +354,16 @@ class NDVIForecaster:
             #                             test_weather_df.sort_values('Date'), 
             #                             on='Date', direction='nearest')
 
+            # # Fetch additional data if needed
+            # if test_end > self.merged_df['Date'].max():
+            #     additional_ndvi_timeseries = self.get_ndvi_timeseries(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
+            #     additional_ndvi_df = self.extract_ndvi_data(additional_ndvi_timeseries, filtering=False)
+            #     additional_weather_df = self.get_weather_data(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
+            #     additional_df = pd.merge_asof(additional_ndvi_df.sort_values('Date'), 
+            #                                 additional_weather_df.sort_values('Date'), 
+            #                                 on='Date', direction='nearest')
+            #     self.merged_df = pd.concat([self.merged_df, additional_df]).sort_values('Date')
+
             self.test_df = self.merged_df[
                 (self.merged_df['Date'] > end_date) & 
                 (self.merged_df['Date'] <= test_end)
@@ -359,12 +390,46 @@ class NDVIForecaster:
             self.forecast_needed = True
             self.case = 3
 
-        # Apply smoothing to train data
+        # # Apply smoothing to train data
+        # self.train_df['NDVI_Smoothed'] = self.apply_smoothing(self.train_df)
+
+        # if self.test_df is not None:
+        #     self.test_df['NDVI_Smoothed'] = self.apply_smoothing(self.test_df)
+        
+        # # Create historical baseline
+        # self.baseline_df = self.create_historical_baseline(self.forecast_dates)
+
+        # # Ensure continuous dates
+        # all_dates = pd.date_range(start=start_date, end=self.forecast_dates[-1], freq='5D')
+        # self.all_data = pd.DataFrame({'Date': all_dates})
+        # self.all_data = pd.merge_asof(self.all_data, self.train_df, on='Date', direction='nearest')
+
+        # if self.test_df is not None and not self.test_df.empty:
+        #     self.all_data = pd.merge_asof(self.all_data, self.test_df, on='Date', direction='nearest', suffixes=('', '_test'))
+        # else:
+        #     self.all_data = pd.merge_asof(self.all_data, self.baseline_df, on='Date', direction='nearest')
+
+        # print("Final data shapes:")
+        # print("Train data:", self.train_df.shape)
+        # # print("Train data:\n", self.train_df)
+        # if self.test_df is None:
+        #     print("Baseline data:", self.baseline_df.shape)
+        # else:
+        #     print("Test data:", self.test_df.shape)
+        # print("All data:", self.all_data.shape)
+
+         # Apply smoothing to train data
         self.train_df['NDVI_Smoothed'] = self.apply_smoothing(self.train_df)
 
         if self.test_df is not None:
-            self.test_df['NDVI_Smoothed'] = self.apply_smoothing(self.test_df)
-        
+            # Combine train and test data for continuous smoothing
+            combined_df = pd.concat([self.train_df, self.test_df]).sort_values('Date')
+            combined_df['NDVI_Smoothed'] = self.apply_smoothing(combined_df)
+            
+            # Split back into train and test
+            self.train_df['NDVI_Smoothed'] = combined_df['NDVI_Smoothed'][:len(self.train_df)]
+            self.test_df['NDVI_Smoothed'] = combined_df['NDVI_Smoothed'][len(self.train_df):]
+
         # Create historical baseline
         self.baseline_df = self.create_historical_baseline(self.forecast_dates)
 
@@ -380,7 +445,6 @@ class NDVIForecaster:
 
         print("Final data shapes:")
         print("Train data:", self.train_df.shape)
-        # print("Train data:\n", self.train_df)
         if self.test_df is None:
             print("Baseline data:", self.baseline_df.shape)
         else:
@@ -409,9 +473,106 @@ class NDVIForecaster:
             X.append(seq_x)
             y.append(seq_y)
         return array(X), array(y)
+    
+    # def optimize_hyperparameters(self, n_trials=100):
+    #     """Optimize hyperparameters using Optuna"""
+    #     def objective(trial):
+    #         # Hyperparameter search space
+    #         lstm_units = trial.suggest_int('lstm_units', 32, 256)
+    #         num_layers = trial.suggest_int('num_layers', 1, 4)
+    #         dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.5)
+    #         learning_rate = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+    #         batch_size = trial.suggest_categorical('batch_size', [16, 32, 64, 128])
+            
+    #         # Get training data
+    #         train_data, smoothed_data = self.scale_data()
+    #         X_train, y_train = self.split_sequences(train_data, self.n_steps_in, self.n_steps_out)
+            
+    #         # Time series cross-validation
+    #         tscv = TimeSeriesSplit(n_splits=5)
+    #         scores = []
+            
+    #         for train_idx, val_idx in tscv.split(X_train):
+    #             X_train_fold = X_train[train_idx]
+    #             y_train_fold = y_train[train_idx]
+    #             X_val_fold = X_train[val_idx]
+    #             y_val_fold = y_train[val_idx]
+                
+    #             # Create and train model with current hyperparameters
+    #             n_features = X_train_fold.shape[2]
+    #             model = LSTMModel(
+    #                 input_size=n_features,
+    #                 hidden_size=lstm_units,
+    #                 num_layers=num_layers,
+    #                 output_size=self.n_steps_out,
+    #                 dropout_rate=dropout_rate
+    #             ).to(self.device)
+                
+    #             # Convert to tensors
+    #             X_train_tensor = torch.FloatTensor(X_train_fold).to(self.device)
+    #             y_train_tensor = torch.FloatTensor(y_train_fold).to(self.device)
+    #             X_val_tensor = torch.FloatTensor(X_val_fold).to(self.device)
+    #             y_val_tensor = torch.FloatTensor(y_val_fold).to(self.device)
+                
+    #             # Training setup
+    #             criterion = nn.MSELoss()
+    #             optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    #             train_dataset = TensorDataset(X_train_tensor, y_train_tensor)
+    #             train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+                
+    #             # Training loop
+    #             model.train()
+    #             for epoch in range(50):  # Reduced epochs for optimization
+    #                 for batch_X, batch_y in train_loader:
+    #                     optimizer.zero_grad()
+    #                     outputs = model(batch_X)
+    #                     loss = criterion(outputs, batch_y)
+    #                     loss.backward()
+    #                     optimizer.step()
+                
+    #             # Validation
+    #             model.eval()
+    #             with torch.no_grad():
+    #                 val_outputs = model(X_val_tensor)
+    #                 val_loss = criterion(val_outputs, y_val_tensor).item()
+    #                 scores.append(val_loss)
+            
+    #         return np.mean(scores)
+        
+    #     # Create and run study
+    #     study = optuna.create_study(direction='minimize')
+    #     study.optimize(objective, n_trials=n_trials)
+        
+    #     # Get best parameters
+    #     best_params = study.best_params
+    #     print("Best hyperparameters:", best_params)
+        
+    #     # Update class attributes with best parameters
+    #     self.lstm_units = best_params['lstm_units']
+    #     self.num_layers = best_params['num_layers']
+    #     self.dropout_rate = best_params['dropout_rate']
+    #     self.learning_rate = best_params['learning_rate']
+    #     self.batch_size = best_params['batch_size']
+        
+    #     return best_params
+
+    # def create_model(self, n_features):
+    #     return LSTMModel(
+    #         n_features,
+    #         self.lstm_units,
+    #         num_layers=2, 
+    #         output_size=self.n_steps_out, 
+    #         dropout_rate=0.2
+    #         ).to(self.device)
 
     def create_model(self, n_features):
-        return LSTMModel(n_features, self.lstm_units, num_layers=2, output_size=self.n_steps_out).to(self.device)
+        return LSTMModel(
+            input_size=n_features,
+            hidden_size=self.model_config['lstm_units'],
+            num_layers=self.model_config['num_layers'],
+            output_size=self.n_steps_out,
+            dropout_rate=self.model_config['dropout_rate']
+        ).to(self.device)
 
     def train_models(self):
         train_data, smoothed_data = self.scale_data()
@@ -430,10 +591,18 @@ class NDVIForecaster:
         X_tensor = torch.FloatTensor(X).to(self.device)
         y_tensor = torch.FloatTensor(y).to(self.device)
         dataset = TensorDataset(X_tensor, y_tensor)
-        dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=self.model_config['batch_size'], 
+            shuffle=True
+        )
 
         criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.0001)
+        optimizer = optim.Adam(
+            model.parameters(), 
+            lr=self.model_config['learning_rate'],
+            weight_decay=1e-5
+        )
 
         print(f"Training {model_name} model on {self.device}")
 
@@ -568,42 +737,91 @@ class NDVIForecaster:
         # Training data
         fig.add_trace(go.Scatter(x=self.train_df['Date'], y=self.train_df['NDVI'], 
                                 mode='lines+markers', name='NDVI (Filtered+Interpolated)', 
-                                line=dict(color='green')))
+                                line=dict(color='darkseagreen')))
         fig.add_trace(go.Scatter(x=self.train_df['Date'], y=self.train_df['NDVI_Smoothed'], 
                                 mode='lines', name='NDVI (Smoothed)', 
-                                line=dict(color='darkseagreen')))
+                                line=dict(color='green')))
         
         # Test data and predictions
-        if self.case in [1, 2] and self.test_df is not None and not self.test_df.empty:
+        if self.case == 1 and self.test_df is not None and not self.test_df.empty:
             # Ensure test period is exactly 3 months
             test_start = self.train_df['Date'].max() + pd.Timedelta(days=1)
             test_end = test_start + pd.DateOffset(months=3) - pd.Timedelta(days=1)
             test_mask = (self.test_df['Date'] >= test_start) & (self.test_df['Date'] <= test_end)
             
             fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI'], 
-                                    mode='lines+markers', name='Test NDVI (Actual)', 
-                                    line=dict(color='blue')))
-            fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI_Smoothed'], 
-                                    mode='lines', name='Test NDVI (Smoothed)', 
+                                    mode='lines+markers', name='Actual NDVI (Filtered+Interpolated)', 
                                     line=dict(color='lightblue')))
+            fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI_Smoothed'], 
+                                    mode='lines', name='Actual NDVI (Smoothed)', 
+                                    line=dict(color='blue')))
             if test_pred_original is not None and len(test_pred_original) > 0:
                 fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_original)], y=test_pred_original.flatten(),
-                                        mode='lines', name='Test NDVI Predicted (Filtered+Interpolated)', 
+                                        mode='lines', name='LSTM Forecast (Filtered+Interpolated)', 
                                         line=dict(color='orange', dash='dot')))
             if test_pred_smoothed is not None and len(test_pred_smoothed) > 0:
                 fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_smoothed)], y=test_pred_smoothed.flatten(),
-                                        mode='lines', name='Test NDVI Predicted (Smoothed)', 
+                                        mode='lines', name='LSTM Forecast (Smoothed)', 
                                         line=dict(color='red', dash='dot')))
-            if self.case == 2:
-                # Historical baseline
-                # all_dates = pd.date_range(start=self.train_df['Date'].min(), end=self.forecast_dates[-1], freq='5D')
-                # self.baseline_df = self.create_historical_baseline(all_dates)
-                fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI'], 
+            # if self.case == 2:
+            #     # Historical baseline
+            #     # all_dates = pd.date_range(start=self.train_df['Date'].min(), end=self.forecast_dates[-1], freq='5D')
+            #     # self.baseline_df = self.create_historical_baseline(all_dates)
+            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI'], 
+            #     #                         mode='lines+markers', name='Test NDVI (Actual)', 
+            #     #                         line=dict(color='blue')))
+            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI_Smoothed'], 
+            #     #                         mode='lines', name='Test NDVI (Smoothed)', 
+            #     #                         line=dict(color='lightblue')))
+                            
+            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_original)], y=test_pred_original.flatten(),
+            #     #                         mode='lines', name='Test NDVI Predicted (Filtered+Interpolated)', 
+            #     #                         line=dict(color='orange', dash='dot')))
+            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_smoothed)], y=test_pred_smoothed.flatten(),
+            #     #                         mode='lines', name='Test NDVI Predicted (Smoothed)', 
+            #     #                         line=dict(color='red', dash='dot')))
+                
+            #     fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI'], 
+            #                             mode='lines+markers', name='Avg Historical Baseline (Filtered+Interpolated)', 
+            #                             line=dict(color='orange', dash='dash')))
+            #     fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI_Smoothed'], 
+            #                             mode='lines', name='Avg Historical Baseline (Smoothed)', 
+            #                             line=dict(color='purple', dash='dash')))
+
+
+        # For Case 2, extend the prediction to a full 3 months
+        if self.case == 2:
+            test_start = self.train_df['Date'].max() + pd.Timedelta(days=1)
+            test_end = test_start + pd.DateOffset(months=3) - pd.Timedelta(days=1)
+            test_mask = (self.test_df['Date'] >= test_start) & (self.test_df['Date'] <= test_end)
+            prediction_end = self.test_df['Date'].max() + pd.DateOffset(months=3)
+            prediction_dates = pd.date_range(start=self.test_df['Date'].min(), end=prediction_end, freq='5D')
+        
+            # Test NDVI predictions
+            fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI'], 
+                                    mode='lines+markers', name='Actual NDVI (Filtered+Interpolated)', 
+                                    line=dict(color='lightblue')))
+            fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI_Smoothed'], 
+                                    mode='lines', name='Actual NDVI (Smoothed)', 
+                                    line=dict(color='blue')))
+
+            # Plot predictions
+            if test_pred_original is not None and len(test_pred_original) > 0:
+                fig.add_trace(go.Scatter(x=prediction_dates[:len(test_pred_original)], y=test_pred_original.flatten(),
+                                        mode='lines', name='LSTM Forecast (Filtered+Interpolated)', 
+                                        line=dict(color='orange', dash='dot')))
+            if test_pred_smoothed is not None and len(test_pred_smoothed) > 0:
+                fig.add_trace(go.Scatter(x=prediction_dates[:len(test_pred_smoothed)], y=test_pred_smoothed.flatten(),
+                                        mode='lines', name='LSTM Forecast (Smoothed)', 
+                                        line=dict(color='red', dash='dot')))
+            
+            fig.add_trace(go.Scatter(x= self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI'], 
                                         mode='lines+markers', name='Avg Historical Baseline (Filtered+Interpolated)', 
-                                        line=dict(color='orange', dash='dash')))
-                fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI_Smoothed'], 
-                                        mode='lines', name='Avg Historical Baseline (Smoothed)', 
-                                        line=dict(color='purple', dash='dash')))
+                                        line=dict(color='cyan', dash='dash')))
+            fig.add_trace(go.Scatter(x= self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI_Smoothed'], 
+                                    mode='lines', name='Avg Historical Baseline (Smoothed)', 
+                                    line=dict(color='purple', dash='dash')))
+
         
         # Forecast
         if self.case == 3:
@@ -611,12 +829,12 @@ class NDVIForecaster:
                 forecast_dates = pd.date_range(start=self.forecast_dates[0], periods=len(forecast_pred_original), freq='5D') # periods=len(forecast_pred_original)
                 fig.add_trace(go.Scatter(x=forecast_dates, y=forecast_pred_original.flatten(), 
                                         mode='lines', name='LSTM Forecast (Filtered+Interpolated)', 
-                                        line=dict(color='red', dash='dot')))
+                                        line=dict(color='orange', dash='dot')))
             if forecast_pred_smoothed is not None and len(forecast_pred_smoothed) > 0:
                 forecast_dates = pd.date_range(start=self.forecast_dates[0], periods=len(forecast_pred_smoothed), freq='5D')  # periods=len(forecast_pred_smoothed)
                 fig.add_trace(go.Scatter(x=forecast_dates, y=forecast_pred_smoothed.flatten(), 
                                         mode='lines', name='LSTM Forecast (Smoothed)', 
-                                        line=dict(color='rosybrown', dash='dot')))
+                                        line=dict(color='red', dash='dot')))
         
             # Historical baseline
             # all_dates = pd.date_range(start=self.train_df['Date'].min(), end=self.forecast_dates[-1], freq='5D')
@@ -624,7 +842,7 @@ class NDVIForecaster:
             self.baseline_df = self.create_historical_baseline(all_dates)
             fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI'], 
                                     mode='lines+markers', name='Avg Historical Baseline (Filtered+Interpolated)', 
-                                    line=dict(color='orange', dash='dash')))
+                                    line=dict(color='cyan', dash='dash')))
             fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI_Smoothed'], 
                                     mode='lines', name='Avg Historical Baseline (Smoothed)', 
                                     line=dict(color='purple', dash='dash')))
@@ -691,7 +909,7 @@ def main():
     forecaster.merge_data()
     forecaster.prepare_data()
     
-    print("Training models...")
+    print("Training models with pre-configured hyperparameters...")
     forecaster.train_models()
     
     print("Generating forecasts...")
