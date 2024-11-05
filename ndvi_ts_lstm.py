@@ -12,11 +12,11 @@ from numpy import array, hstack
 from scipy.interpolate import UnivariateSpline
 import warnings
 import plotly.graph_objects as go
-# from datetime import datetime, timedelta
+
 warnings.filterwarnings("ignore")
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.2):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout_rate=0.288):
         super(LSTMModel, self).__init__()
         self.hidden_size = hidden_size
         self.num_layers = num_layers
@@ -205,6 +205,7 @@ class NDVIForecaster:
         return self.weather_df
 
     def merge_data(self):
+        """Merge the NDVI & Weather data"""
         self.merged_df = pd.merge_asof(self.ndvi_df.sort_values('Date'), self.weather_df.sort_values('Date'), on='Date', direction='nearest')
         print(self.merged_df.shape)
         return self.merged_df
@@ -319,23 +320,6 @@ class NDVIForecaster:
             # test_end = test_start + three_months
             
             print(f"Fetching test data from {test_start} to {test_end}")
-            # test_ndvi_timeseries = self.get_ndvi_timeseries(test_start, test_end)
-            # test_ndvi_df = self.extract_ndvi_data(test_ndvi_timeseries, filtering=False)
-
-            # test_weather_df = self.get_weather_data(test_start, test_end)
-            # self.test_df = pd.merge_asof(test_ndvi_df.sort_values('Date'), 
-            #                             test_weather_df.sort_values('Date'), 
-            #                             on='Date', direction='nearest')
-
-            # # Fetch additional data if needed
-            # if test_end > self.merged_df['Date'].max():
-            #     additional_ndvi_timeseries = self.get_ndvi_timeseries(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
-            #     additional_ndvi_df = self.extract_ndvi_data(additional_ndvi_timeseries, filtering=False)
-            #     additional_weather_df = self.get_weather_data(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
-            #     additional_df = pd.merge_asof(additional_ndvi_df.sort_values('Date'), 
-            #                                 additional_weather_df.sort_values('Date'), 
-            #                                 on='Date', direction='nearest')
-            #     self.merged_df = pd.concat([self.merged_df, additional_df]).sort_values('Date')
 
             self.test_df = self.merged_df[
                 (self.merged_df['Date'] > end_date) & 
@@ -361,23 +345,6 @@ class NDVIForecaster:
             test_end = self.current_date
             
             print(f"Fetching test data from {test_start} to {test_end}")
-            # test_ndvi_timeseries = self.get_ndvi_timeseries(test_start, test_end)
-            # test_ndvi_df = self.extract_ndvi_data(test_ndvi_timeseries, filtering=False)
-        
-            # test_weather_df = self.get_weather_data(test_start, test_end)
-            # self.test_df = pd.merge_asof(test_ndvi_df.sort_values('Date'), 
-            #                             test_weather_df.sort_values('Date'), 
-            #                             on='Date', direction='nearest')
-
-            # # Fetch additional data if needed
-            # if test_end > self.merged_df['Date'].max():
-            #     additional_ndvi_timeseries = self.get_ndvi_timeseries(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
-            #     additional_ndvi_df = self.extract_ndvi_data(additional_ndvi_timeseries, filtering=False)
-            #     additional_weather_df = self.get_weather_data(self.merged_df['Date'].max() + pd.Timedelta(days=1), test_end)
-            #     additional_df = pd.merge_asof(additional_ndvi_df.sort_values('Date'), 
-            #                                 additional_weather_df.sort_values('Date'), 
-            #                                 on='Date', direction='nearest')
-            #     self.merged_df = pd.concat([self.merged_df, additional_df]).sort_values('Date')
 
             self.test_df = self.merged_df[
                 (self.merged_df['Date'] > end_date) & 
@@ -433,7 +400,7 @@ class NDVIForecaster:
         #     print("Test data:", self.test_df.shape)
         # print("All data:", self.all_data.shape)
 
-         # Apply smoothing to train data
+        # Apply smoothing to train data
         self.train_df['NDVI_Smoothed'] = self.apply_smoothing(self.train_df)
 
         if self.test_df is not None:
@@ -693,31 +660,6 @@ class NDVIForecaster:
                 fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_smoothed)], y=test_pred_smoothed.flatten(),
                                         mode='lines', name='LSTM Forecast (Smoothed)', 
                                         line=dict(color='red', dash='dot')))
-            # if self.case == 2:
-            #     # Historical baseline
-            #     # all_dates = pd.date_range(start=self.train_df['Date'].min(), end=self.forecast_dates[-1], freq='5D')
-            #     # self.baseline_df = self.create_historical_baseline(all_dates)
-            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI'], 
-            #     #                         mode='lines+markers', name='Test NDVI (Actual)', 
-            #     #                         line=dict(color='blue')))
-            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'], y=self.test_df.loc[test_mask, 'NDVI_Smoothed'], 
-            #     #                         mode='lines', name='Test NDVI (Smoothed)', 
-            #     #                         line=dict(color='lightblue')))
-                            
-            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_original)], y=test_pred_original.flatten(),
-            #     #                         mode='lines', name='Test NDVI Predicted (Filtered+Interpolated)', 
-            #     #                         line=dict(color='orange', dash='dot')))
-            #     # fig.add_trace(go.Scatter(x=self.test_df.loc[test_mask, 'Date'][:len(test_pred_smoothed)], y=test_pred_smoothed.flatten(),
-            #     #                         mode='lines', name='Test NDVI Predicted (Smoothed)', 
-            #     #                         line=dict(color='red', dash='dot')))
-                
-            #     fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI'], 
-            #                             mode='lines+markers', name='Avg Historical Baseline (Filtered+Interpolated)', 
-            #                             line=dict(color='orange', dash='dash')))
-            #     fig.add_trace(go.Scatter(x=self.baseline_df['Date'], y=self.baseline_df['Historical_Avg_NDVI_Smoothed'], 
-            #                             mode='lines', name='Avg Historical Baseline (Smoothed)', 
-            #                             line=dict(color='purple', dash='dash')))
-
 
         # For Case 2, extend the prediction to a full 3 months
         if self.case == 2:
@@ -752,7 +694,6 @@ class NDVIForecaster:
                                     mode='lines', name='Avg Historical Baseline (Smoothed)', 
                                     line=dict(color='purple', dash='dash')))
 
-        
         # Forecast
         if self.case == 3:
             if forecast_pred_original is not None and len(forecast_pred_original) > 0:

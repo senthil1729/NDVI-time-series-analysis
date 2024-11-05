@@ -5,3 +5,4 @@ plotly
 torch==2.3.0+cu121
 scikit-learn
 scipy
+requests
