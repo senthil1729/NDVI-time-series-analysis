@@ -21,14 +21,34 @@ class LSTMModel(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, dropout=dropout_rate)
-        self.dropout = nn.Dropout(dropout_rate)
+        # self.dropout = nn.Dropout(dropout_rate)
+
+        # Multi-head attention config
+        self.num_heads = 4
+        self.attention = nn.MultiheadAttention(self.hidden_size, num_heads=self.num_heads)
+        self.layer_norm = nn.LayerNorm(hidden_size)
         self.fc = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
         h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
         c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
         out, _ = self.lstm(x, (h0, c0))
-        out = self.fc(out[:, -1, :])
+
+        # Prepare for attenstion (seq_len, batch, hidden)
+        attention_in = out.permute(1, 0, 2)
+
+        # Apply multi-head attention and unpack properly
+        attn_output, _ = self.attention(
+            query=attention_in,
+            key=attention_in,
+            value=attention_in
+        )
+
+        # Add & Norm (residual connection)
+        attn_output = attn_output.permute(1, 0, 2) # Back to (batch, seq, hidden)
+        output = self.layer_norm(out + attn_output)
+
+        out = self.fc(output[:, -1, :])
         return out
 
 class NDVIForecaster:
@@ -100,10 +120,12 @@ class NDVIForecaster:
         return image.updateMask(cloud_mask).divide(10000).select("B.*").copyProperties(image, ["system:time_start"])
 
     def calculate_ndvi(self, image):
+        """Calculate NDVI"""
         ndvi = image.normalizedDifference(['B8', 'B4']).rename('NDVI')
         return image.addBands(ndvi)
 
     def get_ndvi_timeseries(self, start_date, end_date):
+        """Get NDVI timeseries using Google Earth Engine"""
         aoi = ee.Geometry.Polygon([self.coordinates])
         ee_start_date = start_date
         ee_end_date = end_date
@@ -128,6 +150,7 @@ class NDVIForecaster:
         return ndvi_info
 
     def extract_ndvi_data(self, ndvi_timeseries, filtering=True):
+        """Extract NDVI data from the timeseries"""
         dates = []
         ndvi_values = []
         # print("Extracting NDVI data...", ndvi_timeseries)
@@ -145,11 +168,12 @@ class NDVIForecaster:
             self.ndvi_df = self.apply_filtering(self.ndvi_df)
             self.ndvi_df = self.apply_interpolate(self.ndvi_df)
 
-        print("Filtered & Interpolated NDVI data: ", self.ndvi_df.shape)
+        # print("Filtered & Interpolated NDVI data: ", self.ndvi_df.shape)
         return self.ndvi_df 
 
     # Weather data using NASA's Power API
     def get_weather_data(self, start_date, end_date):
+        """Get weather data using NASA's Power API"""
         variables = 'T2M_MAX,T2M_MIN,RH2M,PRECTOTCORR'
         # Calculate the centroid of the farm
         def calculate_centroid(coords):
@@ -207,22 +231,25 @@ class NDVIForecaster:
     def merge_data(self):
         """Merge the NDVI & Weather data"""
         self.merged_df = pd.merge_asof(self.ndvi_df.sort_values('Date'), self.weather_df.sort_values('Date'), on='Date', direction='nearest')
-        print(self.merged_df.shape)
+        # print(self.merged_df.shape)
         return self.merged_df
 
     def apply_filtering(self, df):
+        """Apply filtering to the data"""
         df['BimonthlyPeriod'] = df['Date'].dt.to_period(self.bimonthly_period)
         percentile_threshold = df.groupby('BimonthlyPeriod')['NDVI'].quantile(self.percentile/100).reset_index()
         df = df.merge(percentile_threshold, on='BimonthlyPeriod', suffixes=('', '_threshold'))
         return df[df['NDVI'] >= df['NDVI_threshold']].drop(columns=['BimonthlyPeriod', 'NDVI_threshold'])
 
     def apply_interpolate(self, df):
+        """Apply linear interpolation to the data"""
         df = df.set_index('Date')
         df = df.resample('5D').interpolate(method='linear')
         return df.reset_index() 
     
     def apply_smoothing(self, df):
-        # Minimum number of points needed for cubic spline
+        """Apply smoothing to the data using UnivariateSpline"""
+        # Minimum number of points needed spline
         min_points = 4
         
         # Ensure we're working with a copy and Date is a column
@@ -260,6 +287,7 @@ class NDVIForecaster:
             return spline(df_copy['Date'].map(pd.Timestamp.toordinal))
     
     def create_historical_baseline(self, forecast_dates):
+        """Create average historical NDVI baseline from training data"""
         baseline_predictions = []
         
         for forecast_date in forecast_dates:
@@ -297,15 +325,16 @@ class NDVIForecaster:
         baseline_df['Historical_Avg_NDVI_Smoothed'] = self.apply_smoothing(
             baseline_df.rename(columns={'Historical_Avg_NDVI': 'NDVI'})
         )
-        print('Baseline_df_FnS:', baseline_df.shape)
+        # print('Baseline_df_FnS:', baseline_df.shape)
         return baseline_df
 
     def prepare_data(self):
+        """Prepare data for training and testing"""
         three_months = pd.DateOffset(months=3)
         start_date = pd.Timestamp(self.start_date)
         end_date = pd.Timestamp(self.end_date)
         
-        print("Merged data date range:", self.merged_df['Date'].min(), "to", self.merged_df['Date'].max())
+        # print("Merged data date range:", self.merged_df['Date'].min(), "to", self.merged_df['Date'].max())
         
         if end_date < self.current_date - three_months:
             # Case 1: End date is more than 3 months in the past
@@ -319,18 +348,17 @@ class NDVIForecaster:
             test_end = min(test_start + three_months, self.current_date)
             # test_end = test_start + three_months
             
-            print(f"Fetching test data from {test_start} to {test_end}")
+            # print(f"Fetching test data from {test_start} to {test_end}")
 
             self.test_df = self.merged_df[
                 (self.merged_df['Date'] > end_date) & 
                 (self.merged_df['Date'] <= test_end)
             ].copy()
             
-            print('Case 1 - Train shape', self.train_df.shape, 'Test shape:', self.test_df.shape)
-            print('Test date range:', self.test_df['Date'].min(), 'to', self.test_df['Date'].max())
+            # print('Case 1 - Train shape', self.train_df.shape, 'Test shape:', self.test_df.shape)
+            # print('Test date range:', self.test_df['Date'].min(), 'to', self.test_df['Date'].max())
             
             self.forecast_dates = pd.date_range(start=test_end + pd.Timedelta(days=1), end=test_end + three_months, freq='5D')
-            self.forecast_needed = True
             self.case = 1
 
         elif end_date >= self.current_date - three_months and end_date < self.current_date:
@@ -344,18 +372,17 @@ class NDVIForecaster:
             test_start = end_date + pd.Timedelta(days=1)
             test_end = self.current_date
             
-            print(f"Fetching test data from {test_start} to {test_end}")
+            # print(f"Fetching test data from {test_start} to {test_end}")
 
             self.test_df = self.merged_df[
                 (self.merged_df['Date'] > end_date) & 
                 (self.merged_df['Date'] <= test_end)
             ].copy()
             
-            print('Case 2 - Train shape', self.train_df.shape, 'Test shape:', self.test_df.shape)
-            print('Test date range:', self.test_df['Date'].min(), 'to', self.test_df['Date'].max())
+            # print('Case 2 - Train shape', self.train_df.shape, 'Test shape:', self.test_df.shape)
+            # print('Test date range:', self.test_df['Date'].min(), 'to', self.test_df['Date'].max())
             
             self.forecast_dates = pd.date_range(start=self.current_date + pd.Timedelta(days=1), end=self.current_date + three_months, freq='5D')
-            self.forecast_needed = True
             self.case = 2
         
         else:
@@ -366,41 +393,12 @@ class NDVIForecaster:
                 (self.merged_df['Date'] <= self.current_date)
             ].copy()
 
-            print('Case 3 - Train shape', self.train_df.shape)
+            # print('Case 3 - Train shape', self.train_df.shape)
             
             self.forecast_dates = pd.date_range(start=self.current_date + pd.Timedelta(days=1), end=self.current_date + three_months, freq='5D')
-            self.forecast_needed = True
             self.case = 3
 
-        # # Apply smoothing to train data
-        # self.train_df['NDVI_Smoothed'] = self.apply_smoothing(self.train_df)
-
-        # if self.test_df is not None:
-        #     self.test_df['NDVI_Smoothed'] = self.apply_smoothing(self.test_df)
-        
-        # # Create historical baseline
-        # self.baseline_df = self.create_historical_baseline(self.forecast_dates)
-
-        # # Ensure continuous dates
-        # all_dates = pd.date_range(start=start_date, end=self.forecast_dates[-1], freq='5D')
-        # self.all_data = pd.DataFrame({'Date': all_dates})
-        # self.all_data = pd.merge_asof(self.all_data, self.train_df, on='Date', direction='nearest')
-
-        # if self.test_df is not None and not self.test_df.empty:
-        #     self.all_data = pd.merge_asof(self.all_data, self.test_df, on='Date', direction='nearest', suffixes=('', '_test'))
-        # else:
-        #     self.all_data = pd.merge_asof(self.all_data, self.baseline_df, on='Date', direction='nearest')
-
-        # print("Final data shapes:")
-        # print("Train data:", self.train_df.shape)
-        # # print("Train data:\n", self.train_df)
-        # if self.test_df is None:
-        #     print("Baseline data:", self.baseline_df.shape)
-        # else:
-        #     print("Test data:", self.test_df.shape)
-        # print("All data:", self.all_data.shape)
-
-        # Apply smoothing to train data
+        # Apply smoothing to train data only
         self.train_df['NDVI_Smoothed'] = self.apply_smoothing(self.train_df)
 
         if self.test_df is not None:
@@ -413,6 +411,7 @@ class NDVIForecaster:
             self.test_df['NDVI_Smoothed'] = combined_df['NDVI_Smoothed'][len(self.train_df):]
 
         # if self.test_df is not None:
+        #     # Apply smoothing to test data only
         #     self.test_df['NDVI_Smoothed'] = self.apply_smoothing(self.test_df)
         
         # Create historical baseline
@@ -428,15 +427,16 @@ class NDVIForecaster:
         else:
             self.all_data = pd.merge_asof(self.all_data, self.baseline_df, on='Date', direction='nearest')
 
-        print("Final data shapes:")
-        print("Train data:", self.train_df.shape)
-        if self.test_df is None:
-            print("Baseline data:", self.baseline_df.shape)
-        else:
-            print("Test data:", self.test_df.shape)
-        print("All data:", self.all_data.shape)
+        # print("Final data shapes:")
+        # print("Train data:", self.train_df.shape)
+        # if self.test_df is None:
+        #     print("Baseline data:", self.baseline_df.shape)
+        # else:
+        #     print("Test data:", self.test_df.shape)
+        # print("All data:", self.all_data.shape)
 
     def scale_data(self):
+        """Scale the data using MinMaxScaler"""
         X_scaled = self.scaler_x.fit_transform(self.train_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']])
         y_scaled = self.scaler_y.fit_transform(self.train_df[['NDVI']])
         y_smoothed_scaled = self.scaler_y_smoothed.fit_transform(self.train_df[['NDVI_Smoothed']])
@@ -448,6 +448,7 @@ class NDVIForecaster:
 
     @staticmethod
     def split_sequences(sequences, n_steps_in, n_steps_out):
+        """Split sequences into input and output sequences"""
         X, y = list(), list()
         for i in range(len(sequences)):
             end_ix = i + n_steps_in
@@ -562,73 +563,166 @@ class NDVIForecaster:
         future_weather = pd.DataFrame(future_weather_list)
         return future_weather
 
+    # def forecast(self):
+    #     test_pred_original = None
+    #     test_pred_smoothed = None
+    #     forecast_pred_original = None
+    #     forecast_pred_smoothed = None
+
+    #     if self.case in [1, 2]:
+    #         if self.test_df is not None and not self.test_df.empty:
+    #             test_X = self.scaler_x.transform(self.test_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']])
+    #             last_train_data = self.train_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']].tail(self.n_steps_in).values
+    #             last_train_X = self.scaler_x.transform(last_train_data)
+    #             test_input_sequence = np.vstack([last_train_X, test_X])
+                
+    #             test_pred_original = self.predict_future(self.model_original, test_input_sequence)
+    #             test_pred_smoothed = self.predict_future(self.model_filtered, test_input_sequence)
+                
+    #             if len(test_pred_original) == 0 or len(test_pred_smoothed) == 0:
+    #                 print("Warning: No test predictions generated. Check your test data and model.")
+    #         else:
+    #             print("No test data available for forecasting.")
+        
+    #     if self.case in [2, 3]:
+    #         future_weather = self.get_future_weather(self.forecast_dates)
+    #         future_X = self.scaler_x.transform(future_weather[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']])
+            
+    #         last_known_data = self.train_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']].tail(self.n_steps_in).values
+    #         last_known_X = self.scaler_x.transform(last_known_data)
+            
+    #         forecast_input_sequence = np.vstack([last_known_X, future_X])
+            
+    #         forecast_pred_original = self.predict_future(self.model_original, forecast_input_sequence)
+    #         forecast_pred_smoothed = self.predict_future(self.model_filtered, forecast_input_sequence)
+            
+    #         if len(forecast_pred_original) == 0 or len(forecast_pred_smoothed) == 0:
+    #             print("Warning: No forecast predictions generated. Check your forecast data and model.")
+
+    #     # Inverse transform predictions only if they are not empty
+    #     if test_pred_original is not None and len(test_pred_original) > 0:
+    #         test_pred_original = self.scaler_y.inverse_transform(np.array(test_pred_original).reshape(-1, 1))
+    #     if test_pred_smoothed is not None and len(test_pred_smoothed) > 0:
+    #         test_pred_smoothed = self.scaler_y_smoothed.inverse_transform(np.array(test_pred_smoothed).reshape(-1, 1))
+    #         # Apply smoothing to test predictions
+    #         test_dates = self.test_df['Date'][:len(test_pred_smoothed)]
+    #         test_pred_smoothed = self.apply_smoothing(pd.DataFrame({'Date': test_dates, 'NDVI': test_pred_smoothed.flatten()}))
+        
+    #     if forecast_pred_original is not None and len(forecast_pred_original) > 0:
+    #         forecast_pred_original = self.scaler_y.inverse_transform(np.array(forecast_pred_original).reshape(-1, 1))
+    #     if forecast_pred_smoothed is not None and len(forecast_pred_smoothed) > 0:
+    #         forecast_pred_smoothed = self.scaler_y_smoothed.inverse_transform(np.array(forecast_pred_smoothed).reshape(-1, 1))
+    #         # Apply smoothing to forecast predictions
+    #         forecast_dates = pd.date_range(start=self.forecast_dates[0], periods=len(forecast_pred_smoothed), freq='5D')
+    #         forecast_pred_smoothed = self.apply_smoothing(pd.DataFrame({'Date': forecast_dates, 'NDVI': forecast_pred_smoothed.flatten()}))
+            
+    #     # except Exception as e:
+    #     #     print(f"An error occurred during forecasting: {str(e)}")
+    #     #     print("Debugging information:")
+    #     #     print(f"Case: {self.case}")
+    #     #     print(f"Train data shape: {self.train_df.shape}")
+    #     #     if self.test_df is not None:
+    #     #         print(f"Test data shape: {self.test_df.shape}")
+    #     #     print(f"Forecast dates: {self.forecast_dates}")
+        
+    #     return test_pred_original, test_pred_smoothed, forecast_pred_original, forecast_pred_smoothed
+
     def forecast(self):
+        """Generate forecasts for both test and future periods"""
         test_pred_original = None
         test_pred_smoothed = None
         forecast_pred_original = None
         forecast_pred_smoothed = None
 
-        try:
-            if self.case in [1, 2]:
-                if self.test_df is not None and not self.test_df.empty:
-                    test_X = self.scaler_x.transform(self.test_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']])
-                    last_train_data = self.train_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']].tail(self.n_steps_in).values
-                    last_train_X = self.scaler_x.transform(last_train_data)
-                    test_input_sequence = np.vstack([last_train_X, test_X])
-                    
-                    test_pred_original = self.predict_future(self.model_original, test_input_sequence)
-                    test_pred_smoothed = self.predict_future(self.model_filtered, test_input_sequence)
-                    
-                    if len(test_pred_original) == 0 or len(test_pred_smoothed) == 0:
-                        print("Warning: No test predictions generated. Check your test data and model.")
-                else:
-                    print("No test data available for forecasting.")
-            
-            if self.case in [2, 3]:
-                future_weather = self.get_future_weather(self.forecast_dates)
-                future_X = self.scaler_x.transform(future_weather[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']])
+        if self.case in [1, 2]:
+            if self.test_df is not None and not self.test_df.empty:
+                # Scale test data
+                test_X = self.scaler_x.transform(
+                    self.test_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']]
+                )
                 
-                last_known_data = self.train_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']].tail(self.n_steps_in).values
-                last_known_X = self.scaler_x.transform(last_known_data)
+                # Get last n_steps_in from training data
+                last_train_data = self.train_df.tail(self.n_steps_in)[
+                    ['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']
+                ]
+                last_train_X = self.scaler_x.transform(last_train_data)
                 
-                forecast_input_sequence = np.vstack([last_known_X, future_X])
+                # Combine for prediction
+                test_input_sequence = np.vstack([last_train_X, test_X])
                 
-                forecast_pred_original = self.predict_future(self.model_original, forecast_input_sequence)
-                forecast_pred_smoothed = self.predict_future(self.model_filtered, forecast_input_sequence)
+                # Generate predictions
+                test_pred_original = self.predict_future(self.model_original, test_input_sequence)
+                test_pred_smoothed = self.predict_future(self.model_filtered, test_input_sequence)
                 
-                if len(forecast_pred_original) == 0 or len(forecast_pred_smoothed) == 0:
-                    print("Warning: No forecast predictions generated. Check your forecast data and model.")
+                # Generate dates for full 3 months
+                last_train_date = self.train_df['Date'].iloc[-1]
+                test_dates = pd.date_range(
+                    start=last_train_date + pd.Timedelta(days=5),
+                    periods=self.n_steps_out,  # For 3 months (18 * 5 days = 90 days)
+                    freq='5D'
+                )
+                
+                # Convert predictions to numpy arrays if they're not already
+                test_pred_original = np.array(test_pred_original)
+                test_pred_smoothed = np.array(test_pred_smoothed)
 
-            # Inverse transform predictions only if they are not empty
-            if test_pred_original is not None and len(test_pred_original) > 0:
-                test_pred_original = self.scaler_y.inverse_transform(np.array(test_pred_original).reshape(-1, 1))
-            if test_pred_smoothed is not None and len(test_pred_smoothed) > 0:
-                test_pred_smoothed = self.scaler_y_smoothed.inverse_transform(np.array(test_pred_smoothed).reshape(-1, 1))
-                # Apply smoothing to test predictions
-                test_dates = self.test_df['Date'][:len(test_pred_smoothed)]
-                test_pred_smoothed = self.apply_smoothing(pd.DataFrame({'Date': test_dates, 'NDVI': test_pred_smoothed.flatten()}))
+                # Inverse transform predictions
+                test_pred_original = self.scaler_y.inverse_transform(
+                    test_pred_original.reshape(-1, 1)
+                )
+                test_pred_smoothed = self.scaler_y_smoothed.inverse_transform(
+                    test_pred_smoothed.reshape(-1, 1)
+                )
+                
+                # Apply smoothing with full date range
+                if test_pred_original is not None and len(test_pred_original) > 0:
+                    test_pred_df = pd.DataFrame({
+                        'Date': test_dates,
+                        'NDVI': test_pred_original.flatten()
+                    })
+                    test_pred_original = self.apply_smoothing(test_pred_df)
+                
+                if test_pred_smoothed is not None and len(test_pred_smoothed) > 0:
+                    test_pred_smoothed_df = pd.DataFrame({
+                        'Date': test_dates,
+                        'NDVI': test_pred_smoothed.flatten()
+                    })
+                    test_pred_smoothed = self.apply_smoothing(test_pred_smoothed_df)
+
+        if self.case in [2, 3]:
+            future_weather = self.get_future_weather(self.forecast_dates)
+            future_X = self.scaler_x.transform(future_weather[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']])
             
-            if forecast_pred_original is not None and len(forecast_pred_original) > 0:
-                forecast_pred_original = self.scaler_y.inverse_transform(np.array(forecast_pred_original).reshape(-1, 1))
-            if forecast_pred_smoothed is not None and len(forecast_pred_smoothed) > 0:
-                forecast_pred_smoothed = self.scaler_y_smoothed.inverse_transform(np.array(forecast_pred_smoothed).reshape(-1, 1))
-                # Apply smoothing to forecast predictions
-                forecast_dates = pd.date_range(start=self.forecast_dates[0], periods=len(forecast_pred_smoothed), freq='5D')
-                forecast_pred_smoothed = self.apply_smoothing(pd.DataFrame({'Date': forecast_dates, 'NDVI': forecast_pred_smoothed.flatten()}))
+            last_known_data = self.train_df[['TempMin', 'TempMax', 'RelativeHumidity', 'Precipitation']].tail(self.n_steps_in).values
+            last_known_X = self.scaler_x.transform(last_known_data)
             
-        except Exception as e:
-            print(f"An error occurred during forecasting: {str(e)}")
-            print("Debugging information:")
-            print(f"Case: {self.case}")
-            print(f"Train data shape: {self.train_df.shape}")
-            if self.test_df is not None:
-                print(f"Test data shape: {self.test_df.shape}")
-            print(f"Forecast dates: {self.forecast_dates}")
-        
+            forecast_input_sequence = np.vstack([last_known_X, future_X])
+            
+            forecast_pred_original = self.predict_future(self.model_original, forecast_input_sequence)
+            forecast_pred_smoothed = self.predict_future(self.model_filtered, forecast_input_sequence)
+            
+            forecast_pred_original = np.array(forecast_pred_original)
+            forecast_pred_smoothed = np.array(forecast_pred_smoothed)
+
+            # Inverse transform predictions
+            forecast_pred_original = self.scaler_y.inverse_transform(
+                forecast_pred_original.reshape(-1, 1)
+            )
+            forecast_pred_smoothed = self.scaler_y_smoothed.inverse_transform(
+                forecast_pred_smoothed.reshape(-1, 1)
+            )
+
+            forecast_dates = pd.date_range(start=self.forecast_dates[0], periods=len(forecast_pred_smoothed), freq='5D')
+            forecast_pred_smoothed = self.apply_smoothing(pd.DataFrame({'Date': forecast_dates, 'NDVI': forecast_pred_smoothed.flatten()}))
+
+            if len(forecast_pred_original) == 0 or len(forecast_pred_smoothed) == 0:
+                print("Warning: No forecast predictions generated. Check your forecast data and model.")
+    
         return test_pred_original, test_pred_smoothed, forecast_pred_original, forecast_pred_smoothed
 
     def visualize_results(self, test_pred_original, test_pred_smoothed, 
                       forecast_pred_original, forecast_pred_smoothed):
+        """Visualize results of the LSTM model"""
         fig = go.Figure()
         
         # Training data
@@ -742,7 +836,7 @@ def main():
     n_steps_in = int(input("Enter steps in (default=36): ") or 36)
     n_steps_out = int(input("Enter steps out (default=18): ") or 18)
     # lstm_units = int(input("Enter number of LSTM units (default=50): ") or 50)
-    percentile = int(input("Enter percentile for filtering (default=65): ") or 65)
+    percentile = int(input("Enter percentile for filtering (default=75): ") or 75)
     bimonthly_period = input("Enter time interval for filtering in months (default=2): ") or '2'
     bimonthly_period = f"{bimonthly_period}M"
     spline_smoothing = float(input("Enter spline smoothing parameter (default=0.96): ") or 0.96)
