@@ -1,6 +1,6 @@
 # NDVI Time Series Analysis and Forecasting
 
-This project implements an NDVI (Normalized Difference Vegetation Index) time series analysis and forecasting tool using LSTM (Long Short-Term Memory). It combines satellite imagery data with weather information to predict future NDVI values for specified geographical areas.
+This project implements an NDVI (Normalized Difference Vegetation Index) time series analysis and forecasting tool using LSTM (Long Short-Term Memory) and Multi-head Attention. It combines satellite imagery data with weather information to predict future NDVI values for specified geographical areas.
 
 ## Features
 
