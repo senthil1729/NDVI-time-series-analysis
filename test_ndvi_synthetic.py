@@ -230,7 +230,8 @@ def main():
     current_date = pd.Timestamp.today().normalize()
     data_end_date = max(pd.Timestamp(end_date) + pd.DateOffset(months=3), current_date)
     
-    forecaster.get_ndvi_timeseries(pd.Timestamp(start_date), data_end_date, data_type='sine')
+    # To generate synthetic NDVI change the `data_type` to `synthetic`
+    forecaster.get_ndvi_timeseries(pd.Timestamp(start_date), data_end_date, data_type='sine')   
     forecaster.extract_ndvi_data(None)
     
     print("Merging and preparing data...")
