@@ -833,10 +833,10 @@ def main():
     start_date = input("Enter start date (YYYY-MM-DD): ").strip()
     end_date = input("Enter end date (YYYY-MM-DD): ").strip()
     
-    n_steps_in = int(input("Enter steps in (default=36): ") or 36)
+    n_steps_in = int(input("Enter steps in (default=72): ") or 72)
     n_steps_out = int(input("Enter steps out (default=18): ") or 18)
     # lstm_units = int(input("Enter number of LSTM units (default=50): ") or 50)
-    percentile = int(input("Enter percentile for filtering (default=75): ") or 75)
+    percentile = int(input("Enter percentile for filtering (default=55): ") or 55)
     bimonthly_period = input("Enter time interval for filtering in months (default=2): ") or '2'
     bimonthly_period = f"{bimonthly_period}M"
     spline_smoothing = float(input("Enter spline smoothing parameter (default=0.96): ") or 0.96)
